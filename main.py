@@ -3,96 +3,110 @@ from tabulate import tabulate
 import argparse
 import csv
 
-# Фильтрация по колонке
-def filtrate(datalist, column, value) -> list:
-    column_index = datalist[0].index(column)
-    filtry = [datalist[0]]+[i for i in datalist if i[column_index] == value]
-    return filtry
-
-
-# Функция среднего арифметического
-def avg(lst: list[Union[int, float]]) -> float:
-    return sum(lst) / len(lst)
-
-# Словарь для функций аггрегации
-func_name_dict = {
-    "min":min,
-    "max":max,
-    "avg":avg
-}
-
-# Аггрегация по числовым значениям
-def aggregator(datalist:list, column:str, agg_func:str) -> Union[list, None]:
+def _convert_value(val: str) -> Union[str, int, float]:
+    """Try converting string to int or float; return as-is on failure."""
     try:
-        column_index = datalist[0].index(column)
-        true_func = func_name_dict[agg_func]
-        preaggry = [i[column_index] for i in datalist[1:]]
-        aggry = [[agg_func, true_func(preaggry)]]
-        return aggry
-    except:
-        print("Ошибка при обработке столбца. Он содержит необрабатываемый формат данных")
+        return int(val)
+    except ValueError:
+        try:
+            return float(val)
+        except ValueError:
+            return val
 
+class CSVProcessor:
+    """Handles CSV parsing, filtering, aggregation, and sorting."""
 
-# Сортировка по значению и направлению(Возрастание по умолчанию)
-def sort_datalist(datalist:list, column:str, way:str) -> list:
-    desc = False
-    if way == "desc":
-        desc = True
-    sorty = [datalist[0]] + sorted(datalist[1:], key=lambda x: x[datalist[0].index(column)], reverse=desc)
-    return sorty
+    def __init__(self, file_path: str):
+        self.file_path = file_path
+        self.datalist = []
+        self.parse_csv()
+        self.func_name_dict = {"min": min, "max": max, "avg": self.avg}
 
-# Изолируем инициализацию от сторонних модулей(тестов)
+    def parse_csv(self) -> None:
+        """Parse CSV file into datalist with type conversion (int/float where possible)."""
+        with open(self.file_path, "r", encoding="utf-8") as csvfile:
+            csvreader = csv.reader(csvfile)
+            for row in csvreader:
+                self.datalist.append([_convert_value(v) for v in row])
+
+    def filter(self, column: str, value: Union[str, int, float], data: list = None) -> list:
+        """Filter rows by column=value. Uses data if provided, else self.datalist."""
+        source = data if data is not None else self.datalist
+        col_idx = source[0].index(column)
+        return [source[0]] + [r for r in source[1:] if r[col_idx] == value]
+
+    def aggregate(
+        self, column: str, agg_func: str, data: list = None
+    ) -> list:
+        """Aggregate column with min/max/avg. Uses data if provided."""
+        source = data if data is not None else self.datalist
+        col_idx = source[0].index(column)
+        values = [r[col_idx] for r in source[1:] if isinstance(r[col_idx], (int, float))]
+        if not values:
+            return [[agg_func, None]]
+        func = self.func_name_dict[agg_func]
+        return [[agg_func, func(values)]]
+
+    def sort(self, column: str, way: str, data: list = None) -> list:
+        """Sort by column. way: 'asc'/'ask' or 'desc'."""
+        source = data if data is not None else self.datalist
+        reverse = way.lower() == "desc"
+        col_idx = source[0].index(column)
+        return [source[0]] + sorted(
+            source[1:], key=lambda x: x[col_idx], reverse=reverse
+        )
+
+    def avg(self, lst: list) -> float:
+        """Arithmetic mean of numeric list."""
+        return sum(lst) / len(lst)
+
+    def output(self, data: list = None) -> None:
+        """Print data as table. Uses self.datalist if data is None."""
+        target = data if data is not None else self.datalist
+        print(tabulate(target, tablefmt="grid", numalign="right"))
+
+class CLIProcessor:
+    """Orchestrates CSV processing based on CLI arguments."""
+
+    def __init__(self, args: argparse.Namespace):
+        self.args = args
+        self.file_path = args.file.name if hasattr(args.file, "name") else args.file
+
+    def _parse_where(self) -> tuple:
+        """Parse where arg (col=val) with type conversion."""
+        parts = self.args.where.split("=", 1)
+        return (_convert_value(parts[0]), _convert_value(parts[1]))
+
+    def run(self) -> None:
+        """Execute workflow: filter -> order -> aggregate -> output."""
+        if self.args.order_by and self.args.aggregate:
+            raise ValueError("Недопустимое сочетание аргументов")
+
+        processor = CSVProcessor(self.file_path)
+        result = processor.datalist
+
+        if self.args.where:
+            col, val = self._parse_where()
+            result = processor.filter(col, val, data=result)
+
+        if self.args.order_by and not self.args.aggregate:
+            col, way = self.args.order_by.split("=", 1)
+            result = processor.sort(col, way, data=result)
+
+        if self.args.aggregate:
+            col, agg = self.args.aggregate.split("=", 1)
+            result = processor.aggregate(col, agg, data=result)
+
+        processor.output(result)
+
 if __name__ == "__main__":
-    # Задаем параметры запуска скрипта
-    parser = argparse.ArgumentParser(description='Filtering and aggregation')
-    parser.add_argument('-f', '--file', default="test_data.csv", type=argparse.FileType('r'), help='Path to csv-file')
-    parser.add_argument('-w', '--where', default=False, type=str, help='Filter by column')
-    parser.add_argument('-a', '--aggregate', default=False, type=str, help='Parametrize aggregation')
-    parser.add_argument('-o', '--order-by', default=False, type=str, help='Ask/desc ordering')
+    parser = argparse.ArgumentParser(description="Filtering and aggregation")
+    parser.add_argument(
+        "-f", "--file", default="test_data.csv", type=argparse.FileType("r"), help="Path to csv-file"
+    )
+    parser.add_argument("-w", "--where", default=False, type=str, help="Filter by column")
+    parser.add_argument("-a", "--aggregate", default=False, type=str, help="Parametrize aggregation")
+    parser.add_argument("-o", "--order-by", default=False, type=str, help="Asc/desc ordering")
     args = parser.parse_args()
 
-    # Парсинг csv-файла в список datalist
-    with args.file as csvfile:
-        csvreader = csv.reader(csvfile)
-        datalist = []
-        
-        for row in csvreader:
-            # Конвертируем строки в числа или float если можем
-            for id, value in enumerate(row):
-                try:
-                    row[id] = int(value)
-                except:
-                    try: 
-                        row[id] = float(value)
-                    except:
-                        pass
-                    
-            datalist.append(row)
-
-    # Извлекаем параметры из запроса и сразу применяем их
-    if args.where:
-        where = args.where.split("=") 
-        # Возможна сортировка по числовым значениям, преобразуем если можем
-        for id, value in enumerate(where):
-                try:
-                    where[id] = int(value)
-                except:
-                    try: 
-                        where[id] = float(value)
-                    except:
-                        pass
-        datalist = filtrate(datalist, where[0], where[1])
-        
-    if args.aggregate and not(args.order_by):  
-        aggregate = args.aggregate.split("=")
-        datalist = aggregator(datalist, aggregate[0], aggregate[1])
-        
-    if args.order_by and not(args.aggregate):
-        order_by = args.order_by.split("=")
-        datalist = sort_datalist(datalist, order_by[0], order_by[1])
-        
-    if args.order_by and args.aggregate:
-        raise Exception("Недопустимое сочетание аргументов")
-    
-    # Конечный вывод
-    print(tabulate(datalist, tablefmt="grid", numalign="right"))
+    CLIProcessor(args).run()
